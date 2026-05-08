@@ -1,0 +1,12 @@
+Debug/
+*.o
+*.obj
+*.elf
+*.hex
+*.map
+*.siz
+*.src
+*.d
+*.bak
+*.tmp
+*.log
