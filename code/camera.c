@@ -9,8 +9,10 @@
 #define TRACK_LINE_IS_BLACK            0
 
 #define CAMERA_CLOSE_THRESHOLD_OFFSET  5
-#define CAMERA_MID_THRESHOLD_OFFSET    10
-#define CAMERA_FAR_THRESHOLD_OFFSET    25
+#define CAMERA_MID_THRESHOLD_OFFSET    4
+#define CAMERA_FAR_THRESHOLD_OFFSET    0
+#define CAMERA_OTSU_HIST_MIN           40
+#define CAMERA_OTSU_HIST_MAX           160
 
 #define DISPLAY_IMAGE_DIV              2
 #define DISPLAY_REFRESH_SKIP           10
@@ -29,6 +31,7 @@
 #define CAMERA_TOP_END_ROW             (MT9V03X_1_H / 3)
 
 #define CAMERA_COMPONENT_ROWS_MIN      5
+#define CAMERA_COMPONENT_SUPPRESS_ROWS 2
 #define CAMERA_COMPONENT_SEGMENT_MIN   2
 #define CAMERA_COMPONENT_WHITE_MIN     32
 #define CAMERA_COMPONENT_WIDTH_MAX     48
@@ -93,6 +96,10 @@ static uint8 left_lost_center[CAMERA_LOST_BLOCK_MAX];
 static uint8 right_lost_center[CAMERA_LOST_BLOCK_MAX];
 static uint8 top_lost_center[CAMERA_LOST_BLOCK_MAX];
 static uint8 bottom_lost_center[CAMERA_LOST_BLOCK_MAX];
+static uint8 left_lost_start[CAMERA_LOST_BLOCK_MAX];
+static uint8 right_lost_start[CAMERA_LOST_BLOCK_MAX];
+static uint8 top_lost_start[CAMERA_LOST_BLOCK_MAX];
+static uint8 bottom_lost_start[CAMERA_LOST_BLOCK_MAX];
 
 static uint8 camera_threshold_base = 0;
 static uint8 camera_threshold_near = 0;
@@ -179,10 +186,15 @@ static uint8 compute_otsu_threshold(void)
     int wF = 0;
     float varMax = 0.0f;
     uint8 threshold = 0;
+    int hist_min = CAMERA_OTSU_HIST_MIN;
+    int hist_max = CAMERA_OTSU_HIST_MAX;
 
     for(int i = 0; i < pixel_count; i++)
     {
-        histogram[img_ptr[i]]++;
+        uint8 val = img_ptr[i];
+        if(val < hist_min) val = (uint8)hist_min;
+        else if(val > hist_max) val = (uint8)hist_max;
+        histogram[val]++;
     }
 
     for(int i = 0; i < 256; i++)
@@ -209,8 +221,8 @@ static uint8 compute_otsu_threshold(void)
         }
     }
 
-    if(threshold < 30) threshold = 30;
-    if(threshold > 220) threshold = 220;
+    if(threshold < 70) threshold = 70;
+    if(threshold > 160) threshold = 160;
     return threshold;
 }
 
@@ -262,9 +274,12 @@ static uint8 camera_row_is_component(uint8 row, uint8 selected_width)
     {
         multi_segment_white_min = CAMERA_COMPONENT_WHITE_MIN;
     }
-    if(width_limit < CAMERA_COMPONENT_WIDTH_MAX)
+    if(row >= MT9V03X_1_H / 3)
     {
-        width_limit = CAMERA_COMPONENT_WIDTH_MAX;
+        if(width_limit < CAMERA_COMPONENT_WIDTH_MAX)
+        {
+            width_limit = CAMERA_COMPONENT_WIDTH_MAX;
+        }
     }
 
     if(row_segment_count[row] >= CAMERA_COMPONENT_SEGMENT_MIN &&
@@ -273,7 +288,14 @@ static uint8 camera_row_is_component(uint8 row, uint8 selected_width)
         return 1;
     }
 
-    if(row >= (MT9V03X_1_H / 3) && selected_width > width_limit)
+    if(selected_width > width_limit)
+    {
+        return 1;
+    }
+
+    // 杩滄櫙琛岀櫧鐐瑰紓甯稿锛堝弽鍏夊鑷达級锛屽嵆浣胯拷韪櫒鏈€夊娈典篃鏍囪
+    if(row < MT9V03X_1_H / 3 &&
+       white_num_row[row] >= (uint16)expected_width * 3)
     {
         return 1;
     }
@@ -283,6 +305,7 @@ static uint8 camera_row_is_component(uint8 row, uint8 selected_width)
 
 static void camera_reset_frame_features(void)
 {
+    memset(process_image[0], 0, MT9V03X_1_W * MT9V03X_1_H);
     memset(white_num_row, 0, sizeof(white_num_row));
     memset(white_num_col, 0, sizeof(white_num_col));
     memset(row_segment_count, 0, sizeof(row_segment_count));
@@ -307,13 +330,14 @@ static void camera_reset_frame_features(void)
 static void camera_binarize_frame(void)
 {
     uint8 dynamic_threshold = compute_otsu_threshold();
+    const int8 loop[8][2] = {{0,1},{1,1},{1,0},{1,-1},{0,-1},{-1,-1},{-1,0},{-1,1}};
 
     camera_threshold_base = dynamic_threshold;
     camera_threshold_near = clamp_threshold_i16((int16)dynamic_threshold + CAMERA_CLOSE_THRESHOLD_OFFSET);
-    camera_threshold_mid  = clamp_threshold_i16((int16)dynamic_threshold + CAMERA_MID_THRESHOLD_OFFSET);
-    camera_threshold_far  = clamp_threshold_i16((int16)dynamic_threshold + CAMERA_FAR_THRESHOLD_OFFSET);
+    camera_threshold_mid  = clamp_threshold_i16((int16)dynamic_threshold - CAMERA_MID_THRESHOLD_OFFSET);
+    camera_threshold_far  = clamp_threshold_i16((int16)dynamic_threshold - CAMERA_FAR_THRESHOLD_OFFSET);
 
-    for(int y = 0; y < MT9V03X_1_H; y++)
+    for(int y = MT9V03X_1_H - 1; y >= 0; y--)
     {
         uint8 row_threshold;
 
@@ -332,31 +356,62 @@ static void camera_binarize_frame(void)
 
         for(int x = 0; x < MT9V03X_1_W; x++)
         {
-            uint8 neighbor_count = 0;
-
+            // Region threshold first, then 9-neighbor erosion.
 #if TRACK_LINE_IS_BLACK
-            if(raw_snapshot[y][x] < row_threshold) neighbor_count++;
-            if((x > 0) && (raw_snapshot[y][x - 1] < row_threshold)) neighbor_count++;
-            if((x < MT9V03X_1_W - 1) && (raw_snapshot[y][x + 1] < row_threshold)) neighbor_count++;
-            if((y > 0) && (raw_snapshot[y - 1][x] < row_threshold)) neighbor_count++;
-            if((y < MT9V03X_1_H - 1) && (raw_snapshot[y + 1][x] < row_threshold)) neighbor_count++;
+            if(raw_snapshot[y][x] >= row_threshold)
 #else
-            if(raw_snapshot[y][x] > row_threshold) neighbor_count++;
-            if((x > 0) && (raw_snapshot[y][x - 1] > row_threshold)) neighbor_count++;
-            if((x < MT9V03X_1_W - 1) && (raw_snapshot[y][x + 1] > row_threshold)) neighbor_count++;
-            if((y > 0) && (raw_snapshot[y - 1][x] > row_threshold)) neighbor_count++;
-            if((y < MT9V03X_1_H - 1) && (raw_snapshot[y + 1][x] > row_threshold)) neighbor_count++;
+            if(raw_snapshot[y][x] < row_threshold)
+#endif
+            {
+                continue;
+            }
+
+            {
+                int white_num = 0;
+                int black_num = 0;
+
+                // Center pixel also has to pass the global threshold.
+#if TRACK_LINE_IS_BLACK
+                if(raw_snapshot[y][x] < dynamic_threshold) white_num++;
+                else black_num++;
+#else
+                if(raw_snapshot[y][x] >= dynamic_threshold) white_num++;
+                else black_num++;
 #endif
 
-            if(neighbor_count >= CAMERA_FAST_FILTER_MIN_COUNT)
-            {
-                process_image[y][x] = 255;
-                white_num_row[y]++;
-                white_num_col[x]++;
-            }
-            else
-            {
-                process_image[y][x] = 0;
+                for(int k = 0; k < 8; k++)
+                {
+                    int nx = x + loop[k][0];
+                    int ny = y + loop[k][1];
+
+                    if(nx < 0 || nx >= MT9V03X_1_W || ny < 0 || ny >= MT9V03X_1_H)
+                    {
+                        white_num++;
+                    }
+#if TRACK_LINE_IS_BLACK
+                    else if(raw_snapshot[ny][nx] < dynamic_threshold)
+#else
+                    else if(raw_snapshot[ny][nx] >= dynamic_threshold)
+#endif
+                    {
+                        white_num++;
+                    }
+                    else
+                    {
+                        black_num++;
+                    }
+                    if(black_num >= 2)
+                    {
+                        break;
+                    }
+                }
+
+                if(white_num >= 8)
+                {
+                    process_image[y][x] = 255;
+                    white_num_row[y]++;
+                    white_num_col[x]++;
+                }
             }
         }
     }
@@ -734,7 +789,7 @@ static uint8 count_valid_rows(int start, int end)
     return count;
 }
 
-static void camera_store_lost_block(uint8 *block_num, uint8 centers[], int start, int end)
+static void camera_store_lost_block(uint8 *block_num, uint8 centers[], uint8 starts[], int start, int end)
 {
     if((end - start + 1) < CAMERA_LOST_BLOCK_MIN_LEN)
     {
@@ -744,6 +799,7 @@ static void camera_store_lost_block(uint8 *block_num, uint8 centers[], int start
     if(*block_num < CAMERA_LOST_BLOCK_MAX)
     {
         centers[*block_num] = (uint8)((start + end) / 2);
+        starts[*block_num] = (uint8)start;
     }
     (*block_num)++;
 }
@@ -751,6 +807,7 @@ static void camera_store_lost_block(uint8 *block_num, uint8 centers[], int start
 static void camera_count_lost_blocks_vertical(uint8 *count,
                                               uint8 *block_num,
                                               uint8 centers[],
+                                              uint8 starts[],
                                               int start,
                                               int end,
                                               uint8 side)
@@ -786,14 +843,14 @@ static void camera_count_lost_blocks_vertical(uint8 *count,
         }
         else if(in_block)
         {
-            camera_store_lost_block(block_num, centers, block_start, y - 1);
+            camera_store_lost_block(block_num, centers, starts, block_start, y - 1);
             in_block = 0;
         }
     }
 
     if(in_block)
     {
-        camera_store_lost_block(block_num, centers, block_start, end - 1);
+        camera_store_lost_block(block_num, centers, starts, block_start, end - 1);
     }
 }
 
@@ -831,6 +888,167 @@ static uint8 camera_edge_white_count(uint8 row, uint8 left_side)
     return count;
 }
 
+static int camera_select_segment_near(uint8 row, int prev_center, int max_center_error)
+{
+    int best_index = -1;
+    int best_score = 32767;
+    uint8 count = row_segment_count[row];
+
+    if(count > CAMERA_ROW_SEGMENT_MAX)
+    {
+        count = CAMERA_ROW_SEGMENT_MAX;
+    }
+
+    for(uint8 i = 0; i < count; i++)
+    {
+        int width = camera_segment_width(row, i);
+        int center = camera_segment_center(row, i);
+        int center_error = camera_abs_i32(center - prev_center);
+        int width_error = camera_abs_i32(width - camera_expected_width(row));
+        int score = center_error * 3 + width_error;
+
+        if(center_error > max_center_error)
+        {
+            continue;
+        }
+
+        if(width < CAMERA_SEGMENT_MIN_WIDTH)
+        {
+            continue;
+        }
+
+        if(score < best_score)
+        {
+            best_score = score;
+            best_index = i;
+        }
+    }
+
+    return best_index;
+}
+
+static void camera_boundary_track(void)
+{
+    int start_y = -1;
+    int start_left = 0;
+    int start_right = 0;
+    int lost_count = 0;
+
+    for(int y = MT9V03X_1_H - 1; y >= MT9V03X_1_H - CAMERA_START_SEARCH_ROWS && y >= 0; y--)
+    {
+        if(white_num_row[y] >= 5 && (y == 0 || white_num_row[y - 1] >= 5))
+        {
+            int seg = camera_select_segment_near((uint8)y, MT9V03X_1_W / 2,
+                                                 CAMERA_START_CENTER_LIMIT);
+            if(seg >= 0)
+            {
+                start_y = y;
+                start_left = segment_start[y][seg];
+                start_right = segment_end[y][seg];
+                break;
+            }
+        }
+    }
+
+    if(start_y < 0)
+    {
+        line_lost_count = MT9V03X_1_H;
+        line_confidence = 0;
+        memset(line_found, 0, sizeof(line_found));
+        memset(line_width, 0, sizeof(line_width));
+        for(int y = 0; y < MT9V03X_1_H; y++)
+        {
+            process_line_mid[y] = LOST_LINE_REPLACE_VAL;
+            left_boundary[y] = 0;
+            right_boundary[y] = MT9V03X_1_W - 1;
+        }
+        return;
+    }
+
+    for(int y = MT9V03X_1_H - 1; y > start_y; y--)
+    {
+        process_line_mid[y] = (int16)((start_left + start_right) / 2);
+        left_boundary[y] = (int16)start_left;
+        right_boundary[y] = (int16)start_right;
+        line_found[y] = 1;
+        line_width[y] = (uint8)(start_right - start_left + 1);
+    }
+
+    process_line_mid[start_y] = (int16)((start_left + start_right) / 2);
+    left_boundary[start_y] = (int16)start_left;
+    right_boundary[start_y] = (int16)start_right;
+    line_found[start_y] = 1;
+    line_width[start_y] = (uint8)(start_right - start_left + 1);
+
+    int prev_left = start_left;
+    int prev_right = start_right;
+
+    for(int y = start_y - 1; y >= 0; y--)
+    {
+        uint8 expected_w = camera_expected_width((uint8)y);
+        int margin;
+        int seg;
+        int new_left = -1;
+        int new_right = -1;
+
+        if(y < MT9V03X_1_H / 3)
+        {
+            margin = (int)expected_w * 2;
+            if(margin < 10) margin = 10;
+        }
+        else
+        {
+            margin = (int)expected_w + CAMERA_SEGMENT_CONNECT_MARGIN;
+            if(margin < 16) margin = 16;
+        }
+
+        seg = camera_select_segment_near((uint8)y, (prev_left + prev_right) / 2,
+                                         margin + expected_w);
+        if(seg >= 0)
+        {
+            new_left = segment_start[y][seg];
+            new_right = segment_end[y][seg];
+        }
+
+        if(new_left >= 0 && new_right >= 0 && new_left <= new_right)
+        {
+            int width = new_right - new_left + 1;
+
+            if(camera_row_is_component((uint8)y, (uint8)(width > 255 ? 255 : width)))
+            {
+                component_row[y] = 1;
+                component_row_count++;
+                process_line_mid[y] = (int16)((prev_left + prev_right) / 2);
+                left_boundary[y] = (int16)new_left;
+                right_boundary[y] = (int16)new_right;
+                line_found[y] = 0;
+                line_width[y] = (uint8)(width > 255 ? 255 : width);
+                lost_count++;
+                continue;
+            }
+
+            process_line_mid[y] = (int16)((new_left + new_right) / 2);
+            left_boundary[y] = (int16)new_left;
+            right_boundary[y] = (int16)new_right;
+            line_found[y] = 1;
+            line_width[y] = (uint8)(width > 255 ? 255 : width);
+            prev_left = new_left;
+            prev_right = new_right;
+        }
+        else
+        {
+            process_line_mid[y] = (int16)((prev_left + prev_right) / 2);
+            left_boundary[y] = (int16)prev_left;
+            right_boundary[y] = (int16)prev_right;
+            line_found[y] = 0;
+            line_width[y] = 0;
+            lost_count++;
+        }
+    }
+
+    line_lost_count = (lost_count > 255) ? 255 : (uint8)lost_count;
+    line_confidence = (uint8)((MT9V03X_1_H - line_lost_count) * 100 / MT9V03X_1_H);
+}
 static void camera_update_edge_migration(void)
 {
     memset(left_touch_edge, 0, sizeof(left_touch_edge));
@@ -838,44 +1056,23 @@ static void camera_update_edge_migration(void)
 
     for(int y = 0; y < MT9V03X_1_H; y++)
     {
+        if(component_row[y]) continue;
+
         int edge_margin = camera_expected_width((uint8)y) / 2 + CAMERA_EDGE_LOST_MARGIN;
-        int migrate_white_min = camera_expected_width((uint8)y) / 3;
-        int center = process_line_mid[y];
 
-        if(migrate_white_min < CAMERA_EDGE_MIGRATE_WHITE_MIN)
+        if(!line_found[y])
         {
-            migrate_white_min = CAMERA_EDGE_MIGRATE_WHITE_MIN;
-        }
-
-        if(!line_found[y] || component_row[y])
-        {
-            if(!line_found[y] && !component_row[y])
-            {
-                if(left_boundary[y] <= edge_margin)
-                {
-                    left_touch_edge[y] = 1;
-                }
-                if(right_boundary[y] >= (MT9V03X_1_W - 1 - edge_margin))
-                {
-                    right_touch_edge[y] = 1;
-                }
-            }
+            if(left_boundary[y] <= edge_margin)
+                left_touch_edge[y] = 1;
+            if(right_boundary[y] >= (MT9V03X_1_W - 1 - edge_margin))
+                right_touch_edge[y] = 1;
             continue;
         }
 
-        if(left_boundary[y] <= edge_margin ||
-           (center < MT9V03X_1_W / 3 &&
-            camera_edge_white_count((uint8)y, 1) >= migrate_white_min))
-        {
+        if(left_boundary[y] <= edge_margin)
             left_touch_edge[y] = 1;
-        }
-
-        if(right_boundary[y] >= (MT9V03X_1_W - 1 - edge_margin) ||
-           (center > MT9V03X_1_W * 2 / 3 &&
-            camera_edge_white_count((uint8)y, 0) >= migrate_white_min))
-        {
+        if(right_boundary[y] >= (MT9V03X_1_W - 1 - edge_margin))
             right_touch_edge[y] = 1;
-        }
     }
 }
 
@@ -893,14 +1090,18 @@ static void camera_update_lost_features(void)
     memset(right_lost_center, 0, sizeof(right_lost_center));
     memset(top_lost_center, 0, sizeof(top_lost_center));
     memset(bottom_lost_center, 0, sizeof(bottom_lost_center));
+    memset(left_lost_start, 0, sizeof(left_lost_start));
+    memset(right_lost_start, 0, sizeof(right_lost_start));
+    memset(top_lost_start, 0, sizeof(top_lost_start));
+    memset(bottom_lost_start, 0, sizeof(bottom_lost_start));
 
-    camera_count_lost_blocks_vertical(&top_lost_count, &top_lost_num, top_lost_center,
+    camera_count_lost_blocks_vertical(&top_lost_count, &top_lost_num, top_lost_center, top_lost_start,
                                       CAMERA_TOP_START_ROW, CAMERA_TOP_END_ROW, 0);
-    camera_count_lost_blocks_vertical(&bottom_lost_count, &bottom_lost_num, bottom_lost_center,
+    camera_count_lost_blocks_vertical(&bottom_lost_count, &bottom_lost_num, bottom_lost_center, bottom_lost_start,
                                       CAMERA_BOTTOM_START_ROW, MT9V03X_1_H, 0);
-    camera_count_lost_blocks_vertical(&left_lost_count, &left_lost_num, left_lost_center,
+    camera_count_lost_blocks_vertical(&left_lost_count, &left_lost_num, left_lost_center, left_lost_start,
                                       CAMERA_TOP_START_ROW, MT9V03X_1_H, 1);
-    camera_count_lost_blocks_vertical(&right_lost_count, &right_lost_num, right_lost_center,
+    camera_count_lost_blocks_vertical(&right_lost_count, &right_lost_num, right_lost_center, right_lost_start,
                                       CAMERA_TOP_START_ROW, MT9V03X_1_H, 2);
 }
 
@@ -977,8 +1178,6 @@ static void camera_update_public_state_from_phase(void)
     corner_direction = 0;
 }
 
-static uint8 camera_last_stored_block_index(uint8 block_num);
-
 static uint8 camera_side_lost_center_valid(uint8 block_num, uint8 centers[])
 {
     uint8 center;
@@ -988,7 +1187,7 @@ static uint8 camera_side_lost_center_valid(uint8 block_num, uint8 centers[])
         return 0;
     }
 
-    center = centers[camera_last_stored_block_index(block_num)];
+    center = centers[0];
     return (center > CAMERA_TOP_START_ROW &&
             center < (CAMERA_BOTTOM_START_ROW - CAMERA_LOST_BLOCK_MIN_LEN));
 }
@@ -1025,7 +1224,7 @@ static uint8 camera_detect_raw_corner(uint8 bottom_valid)
                    left_lost_count <= CAMERA_CORNER_OPPOSITE_MAX &&
                    camera_side_lost_center_valid(right_lost_num, right_lost_center));
 
-    // 计数值回退：碎片化贴边没成块但总数足够
+    // 璁℃暟鍊煎洖閫€锛氱鐗囧寲璐磋竟娌℃垚鍧椾絾鎬绘暟瓒冲
     if(!left_valid && !right_valid)
     {
         if(left_lost_count >= CAMERA_CORNER_SIDE_LOST_MIN + 4 &&
@@ -1056,45 +1255,50 @@ static uint8 camera_detect_raw_corner(uint8 bottom_valid)
 
 static uint8 camera_detect_early_corner(uint8 bottom_valid)
 {
+    uint8 left_valid;
+    uint8 right_valid;
+
     if(bottom_valid < CAMERA_CORNER_BOTTOM_VALID_MIN)
     {
         return 0;
     }
+
     if(component_row_count >= CAMERA_CORNER_COMPONENT_BLOCK)
     {
         return 0;
     }
 
-    // 路径1——草莽思路：有连续丢边块 + 对侧无块 + 顶部未丢
-    if(left_lost_num > 0 &&
-       left_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN &&
-       right_lost_num == 0 &&
-       top_lost_count < CAMERA_CORNER_EARLY_TOP_LOST_MAX &&
-       camera_side_lost_center_valid(left_lost_num, left_lost_center))
+    if(top_lost_num != 0 || top_lost_count > CAMERA_CORNER_EARLY_TOP_LOST_MAX)
+    {
+        return 0;
+    }
+
+    if(bottom_lost_num == 0)
+    {
+        return 0;
+    }
+
+    // 鑽夎幗鐩磋鍒ゆ柇锛氬簳閮ㄦ湁涓㈠潡 + 鍗曚晶鏈変涪鍧?+ 椤堕儴娌′涪 + 瀵逛晶娌′涪
+    left_valid = (left_lost_num > 0 &&
+                  right_lost_num == 0 &&
+                  left_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN &&
+                  right_lost_count <= CAMERA_CORNER_OPPOSITE_MAX &&
+                  left_lost_count >= right_lost_count + CAMERA_CORNER_SIDE_DOMINANCE &&
+                  camera_side_lost_center_valid(left_lost_num, left_lost_center));
+
+    right_valid = (right_lost_num > 0 &&
+                   left_lost_num == 0 &&
+                   right_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN &&
+                   left_lost_count <= CAMERA_CORNER_OPPOSITE_MAX &&
+                   right_lost_count >= left_lost_count + CAMERA_CORNER_SIDE_DOMINANCE &&
+                   camera_side_lost_center_valid(right_lost_num, right_lost_center));
+
+    if(left_valid && !right_valid)
     {
         return 1;
     }
 
-    if(right_lost_num > 0 &&
-       right_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN &&
-       left_lost_num == 0 &&
-       top_lost_count < CAMERA_CORNER_EARLY_TOP_LOST_MAX &&
-       camera_side_lost_center_valid(right_lost_num, right_lost_center))
-    {
-        return 2;
-    }
-
-    // 路径2——计数值回退：贴边行碎片化、形不成连续块但总数已经足够
-    if(left_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN + 4 &&
-       right_lost_count <= 2 &&
-       top_lost_count < CAMERA_CORNER_EARLY_TOP_LOST_MAX)
-    {
-        return 1;
-    }
-
-    if(right_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN + 4 &&
-       left_lost_count <= 2 &&
-       top_lost_count < CAMERA_CORNER_EARLY_TOP_LOST_MAX)
+    if(right_valid && !left_valid)
     {
         return 2;
     }
@@ -1111,14 +1315,28 @@ static void camera_update_vision_state(void)
     uint8 normal_valid = count_valid_rows(MT9V03X_1_H / 3, MT9V03X_1_H * 5 / 6);
     uint8 raw_corner = 0;
     uint8 component_detected;
+    uint8 component_suspect;
+    uint8 strong_side_corner;
     uint8 normal_ready;
     uint8 lost_detected;
 
-    component_detected = (component_row_count >= CAMERA_COMPONENT_ROWS_MIN);
     raw_corner = camera_detect_raw_corner(bottom_valid);
     if(raw_corner == 0)
     {
         raw_corner = camera_detect_early_corner(bottom_valid);
+    }
+    strong_side_corner =
+        ((left_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN &&
+          left_lost_count >= right_lost_count + CAMERA_CORNER_SIDE_DOMINANCE &&
+          right_lost_count <= CAMERA_CORNER_OPPOSITE_MAX + 1) ||
+         (right_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN &&
+          right_lost_count >= left_lost_count + CAMERA_CORNER_SIDE_DOMINANCE &&
+          left_lost_count <= CAMERA_CORNER_OPPOSITE_MAX + 1));
+    component_detected = (component_row_count >= CAMERA_COMPONENT_ROWS_MIN && !strong_side_corner);
+    component_suspect = (component_row_count >= CAMERA_COMPONENT_SUPPRESS_ROWS && !strong_side_corner);
+    if(component_suspect && !camera_phase_is_corner(vision_phase))
+    {
+        raw_corner = 0;
     }
     normal_ready = (normal_valid >= CAMERA_CORNER_EXIT_VALID_MIN &&
                     left_lost_num == 0 &&
@@ -1164,7 +1382,7 @@ static void camera_update_vision_state(void)
             break;
 
         case VISION_PHASE_COMPONENT_ENTER:
-            if(raw_corner != 0)
+            if(raw_corner != 0 && !component_detected)
             {
                 corner_direction = raw_corner;
                 camera_enter_phase(camera_corner_phase_from_dir(raw_corner, 0));
@@ -1181,7 +1399,7 @@ static void camera_update_vision_state(void)
             break;
 
         case VISION_PHASE_COMPONENT_LOCK:
-            if(raw_corner != 0)
+            if(raw_corner != 0 && !component_detected)
             {
                 corner_direction = raw_corner;
                 camera_enter_phase(camera_corner_phase_from_dir(raw_corner, 0));
@@ -1327,33 +1545,40 @@ static int camera_find_bottom_stable_y(void)
     return MT9V03X_1_H - 1;
 }
 
-static uint8 camera_last_stored_block_index(uint8 block_num)
+static uint8 camera_get_corner_anchor(uint8 direction, int16 *end_x, int *end_y)
 {
-    if(block_num == 0) return 0;
-    if(block_num > CAMERA_LOST_BLOCK_MAX) return CAMERA_LOST_BLOCK_MAX - 1;
-    return block_num - 1;
-}
+    int y;
 
-static int camera_select_corner_end_y(uint8 direction)
-{
-    int end_y = MT9V03X_1_H / 3;
+    if(direction == 1)
+    {
+        if(bottom_lost_num == 0 || left_lost_num == 0)
+        {
+            return 0;
+        }
 
-    if(direction == 1 && left_lost_num > 0)
-    {
-        end_y = left_lost_center[camera_last_stored_block_index(left_lost_num)];
+        y = left_lost_center[0];
+        *end_x = CAMERA_EDGE_LOST_MARGIN + 2;
     }
-    else if(direction == 2 && right_lost_num > 0)
+    else if(direction == 2)
     {
-        end_y = right_lost_center[camera_last_stored_block_index(right_lost_num)];
+        if(bottom_lost_num == 0 || right_lost_num == 0)
+        {
+            return 0;
+        }
+
+        y = right_lost_center[0];
+        *end_x = MT9V03X_1_W - 1 - CAMERA_EDGE_LOST_MARGIN - 2;
     }
-    else if(top_lost_num > 0)
+    else
     {
-        end_y = top_lost_center[0];
+        return 0;
     }
 
-    if(end_y < MT9V03X_1_H / 4) end_y = MT9V03X_1_H / 4;
-    if(end_y > MT9V03X_1_H * 2 / 3) end_y = MT9V03X_1_H * 2 / 3;
-    return end_y;
+    if(y < CAMERA_TOP_START_ROW) y = CAMERA_TOP_START_ROW;
+    if(y > CAMERA_CORNER_PATCH_END_ROW) y = CAMERA_CORNER_PATCH_END_ROW;
+
+    *end_y = y;
+    return 1;
 }
 
 static int16 camera_curve_patch_x(int16 start_x, int16 end_x, int start_y, int end_y, int y)
@@ -1393,9 +1618,6 @@ static void camera_apply_corner_patch(void)
     int start_y;
     int end_y;
     int rows;
-    int black_count = 0;
-    int bottom_valid;
-    int score = 0;
     int16 start_x;
     int16 end_x;
 
@@ -1407,15 +1629,10 @@ static void camera_apply_corner_patch(void)
     }
 
     start_y = camera_find_bottom_stable_y();
-    end_y = camera_select_corner_end_y(corner_direction);
     start_x = find_bottom_stable_mid();
-    end_x = (vision_state == VISION_CORNER_LEFT) ?
-            (CAMERA_EDGE_LOST_MARGIN + 2) :
-            (MT9V03X_1_W - 1 - CAMERA_EDGE_LOST_MARGIN - 2);
-
-    if(end_y > CAMERA_CORNER_PATCH_END_ROW)
+    if(!camera_get_corner_anchor(corner_direction, &end_x, &end_y))
     {
-        end_y = CAMERA_CORNER_PATCH_END_ROW;
+        return;
     }
 
     if(end_y >= start_y)
@@ -1434,41 +1651,7 @@ static void camera_apply_corner_patch(void)
     {
         return;
     }
-
-    for(int y = start_y; y >= end_y; y--)
-    {
-        int16 patched_mid = camera_curve_patch_x(start_x, end_x, start_y, end_y, y);
-        if(process_image[y][patched_mid] == 0)
-        {
-            black_count++;
-        }
-    }
-
-    if(black_count > rows * CAMERA_PATCH_BLACK_MAX_PERCENT / 100)
-    {
-        return;
-    }
-
-    score = 30;
-    bottom_valid = count_valid_rows(CAMERA_BOTTOM_START_ROW, MT9V03X_1_H);
-    score += (bottom_valid > 20) ? 20 : bottom_valid;
-    if(top_lost_num > 0) score += 15;
-    if((vision_state == VISION_CORNER_LEFT && left_lost_num > 0) ||
-       (vision_state == VISION_CORNER_RIGHT && right_lost_num > 0))
-    {
-        score += 30;
-    }
-    if(black_count < rows * 2 / 3)
-    {
-        score += 10;
-    }
-    if(score > 100) score = 100;
-    corner_patch_quality = (uint8)score;
-
-    if(corner_patch_quality < CAMERA_PATCH_QUALITY_MIN)
-    {
-        return;
-    }
+    corner_patch_quality = 100;
 
     for(int y = start_y; y >= end_y; y--)
     {
@@ -1483,6 +1666,8 @@ static void camera_apply_corner_patch(void)
 static void camera_update_track_offset(void)
 {
     static int16 last_offset = 0;
+    static int16 component_hold_offset = 0;
+    static uint8 last_vision_state = VISION_NORMAL;
     int32 sum = 0;
     int32 weight_sum = 0;
     int start;
@@ -1507,6 +1692,19 @@ static void camera_update_track_offset(void)
         }
     }
 
+    if(vision_state == VISION_COMPONENT)
+    {
+        if(last_vision_state != VISION_COMPONENT)
+        {
+            component_hold_offset = last_offset;
+        }
+
+        track_offset = component_hold_offset;
+        last_offset = track_offset;
+        last_vision_state = vision_state;
+        return;
+    }
+
     for(int y = start; y < end; y++)
     {
         if(!line_found[y] || component_row[y])
@@ -1526,12 +1724,53 @@ static void camera_update_track_offset(void)
 
     track_offset = last_offset + diff;
     last_offset = track_offset;
+    last_vision_state = vision_state;
+}
+
+static uint8 camera_detect_glare(void)
+{
+    int total_white = 0;
+    int total_pixels = MT9V03X_1_H * MT9V03X_1_W;
+    int max_row_white = 0;
+    int max_col_white = 0;
+
+    for(int y = 0; y < MT9V03X_1_H; y++)
+    {
+        total_white += white_num_row[y];
+        if(white_num_row[y] > max_row_white)
+        {
+            max_row_white = white_num_row[y];
+        }
+    }
+    for(int x = 0; x < MT9V03X_1_W; x++)
+    {
+        if(white_num_col[x] > max_col_white)
+        {
+            max_col_white = white_num_col[x];
+        }
+    }
+
+    // 鑽夎幗鎬濊矾锛氭煇鍒楀叏鐧?+ 鏈€澶ц鐧界偣杩滃皬浜庢甯歌禌閬撳搴?鈫?鍙嶅厜鏉＄汗
+    if(max_col_white >= MT9V03X_1_H * 4 / 5 &&
+       max_row_white < camera_expected_width(MT9V03X_1_H - 1) * 3)
+    {
+        return 1;
+    }
+
+    // 鍏ㄥ眬杩囨洕锛氳秴杩囦竴鍗婂儚绱犳槸鐧界殑 鈫?鍙嶅厜/寮哄厜鐩村皠
+    if(total_white > total_pixels / 2)
+    {
+        return 1;
+    }
+
+    return 0;
 }
 
 void image_process_task(void)
 {
     if(mt9v03x_finish_flag_1 == 1)
     {
+        static uint16 startup_frames = 0;
         camera_copy_stable_frame();
         mt9v03x_finish_flag_1 = 0;
 
@@ -1539,7 +1778,15 @@ void image_process_task(void)
         camera_binarize_frame();
         camera_extract_row_segments();
         camera_split_wide_segments();
-        camera_trace_connected_track();
+
+        if(startup_frames < 255) startup_frames++;
+        if(startup_frames > 30 && camera_detect_glare())
+        {
+            image_swap_buffer();
+            return;
+        }
+
+        camera_boundary_track();
         camera_update_edge_migration();
         camera_update_lost_features();
         camera_update_vision_state();

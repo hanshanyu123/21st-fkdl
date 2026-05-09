@@ -265,13 +265,14 @@ static void update_targets_from_camera(void)
     uint8 lost_count;
     float error;
     float turn;
+    uint8 corner_active;
 
     vision_state = Camera_GetVisionState();
     offset = Camera_GetTrackOffset();
     lost_count = Camera_GetLineLostCount();
+    corner_active = (vision_state == VISION_CORNER_LEFT || vision_state == VISION_CORNER_RIGHT);
     allow_vision_lost = (vision_state == VISION_COMPONENT ||
-                         vision_state == VISION_CORNER_LEFT ||
-                         vision_state == VISION_CORNER_RIGHT);
+                         corner_active);
 
     active_base_speed = base_speed_cmd;
     if(!Camera_IsFrameReady())
@@ -295,9 +296,11 @@ static void update_targets_from_camera(void)
 #else
     error = (float)(CONTROL_TURN_SIGN * offset);
     turn = PositionPD_Calculate(&turn_pid, error);
-    turn_limit = (vision_state == VISION_CORNER_LEFT || vision_state == VISION_CORNER_RIGHT) ?
-                 CONTROL_CORNER_TURN_LIMIT :
-                 CONTROL_TURN_LIMIT_DEFAULT;
+    if(corner_active)
+    {
+        turn *= CONTROL_CORNER_TURN_GAIN;
+    }
+    turn_limit = corner_active ? CONTROL_CORNER_TURN_LIMIT : CONTROL_TURN_LIMIT_DEFAULT;
     if(turn_limit > base_speed_target) turn_limit = base_speed_target;
 
     turn_output = clamp_i16((int32)turn, -turn_limit, turn_limit);
