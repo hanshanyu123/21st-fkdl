@@ -1025,6 +1025,23 @@ static uint8 camera_detect_raw_corner(uint8 bottom_valid)
                    left_lost_count <= CAMERA_CORNER_OPPOSITE_MAX &&
                    camera_side_lost_center_valid(right_lost_num, right_lost_center));
 
+    // 计数值回退：碎片化贴边没成块但总数足够
+    if(!left_valid && !right_valid)
+    {
+        if(left_lost_count >= CAMERA_CORNER_SIDE_LOST_MIN + 4 &&
+           right_lost_count <= CAMERA_CORNER_OPPOSITE_MAX + 2 &&
+           left_lost_count >= right_lost_count + CAMERA_CORNER_SIDE_DOMINANCE)
+        {
+            left_valid = 1;
+        }
+        else if(right_lost_count >= CAMERA_CORNER_SIDE_LOST_MIN + 4 &&
+                left_lost_count <= CAMERA_CORNER_OPPOSITE_MAX + 2 &&
+                right_lost_count >= left_lost_count + CAMERA_CORNER_SIDE_DOMINANCE)
+        {
+            right_valid = 1;
+        }
+    }
+
     if(left_valid && !right_valid)
     {
         return 1;
@@ -1048,7 +1065,7 @@ static uint8 camera_detect_early_corner(uint8 bottom_valid)
         return 0;
     }
 
-    // 草莽思路：一侧贴边但顶部还没丢时提前识别直角，不等线从顶部完全消失。
+    // 路径1——草莽思路：有连续丢边块 + 对侧无块 + 顶部未丢
     if(left_lost_num > 0 &&
        left_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN &&
        right_lost_num == 0 &&
@@ -1063,6 +1080,21 @@ static uint8 camera_detect_early_corner(uint8 bottom_valid)
        left_lost_num == 0 &&
        top_lost_count < CAMERA_CORNER_EARLY_TOP_LOST_MAX &&
        camera_side_lost_center_valid(right_lost_num, right_lost_center))
+    {
+        return 2;
+    }
+
+    // 路径2——计数值回退：贴边行碎片化、形不成连续块但总数已经足够
+    if(left_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN + 4 &&
+       right_lost_count <= 2 &&
+       top_lost_count < CAMERA_CORNER_EARLY_TOP_LOST_MAX)
+    {
+        return 1;
+    }
+
+    if(right_lost_count >= CAMERA_CORNER_EARLY_SIDE_LOST_MIN + 4 &&
+       left_lost_count <= 2 &&
+       top_lost_count < CAMERA_CORNER_EARLY_TOP_LOST_MAX)
     {
         return 2;
     }

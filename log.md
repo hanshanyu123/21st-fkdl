@@ -264,3 +264,13 @@
 - 未修改默认速度 `333`、速度环 PI、电机 PWM 底层、编码器底层和摄像头底层。
 - 未执行编译、烧录或硬件测试。
 - 修改者: Claude (Anthropic AI Agent)
+
+## v1.28 - 2026-05-09 碎片化贴边计数值回退 (Claude 修改)
+
+- 根因：v1.27 修复了 line_found=0 行不参与侧边丢边的问题，但直角弯中贴边行经常碎片化（贴2行→断→贴2行），形不成连续3行丢边块，`left/right_lost_num` 为 0，early 和 raw corner 两条路径都不触发。
+- `camera_detect_early_corner()` 新增路径2：不要求 `left/right_lost_num>0`（连续丢边块），仅看贴边总行数 ≥10 且对侧 ≤2 且顶部丢线<8。碎片化贴边也能触发。
+- `camera_detect_raw_corner()` 新增计数值回退：块检测未通过时，如果单侧贴边总行数 ≥12 且对侧 ≤4 且满足优势度，仍视为有效。
+- 当 `left/right_lost_num==0`（无连续块）时补线终点回退到 `MT9V03X_1_H/3` 默认前瞻行，由 `camera_select_corner_end_y()` 已有逻辑处理。
+- 未修改默认速度 `333`、速度环 PI、电机 PWM 底层、编码器底层和摄像头底层。
+- 未执行编译、烧录或硬件测试。
+- 修改者: Claude (Anthropic AI Agent)
