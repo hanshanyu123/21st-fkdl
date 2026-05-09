@@ -768,11 +768,11 @@ static void camera_count_lost_blocks_vertical(uint8 *count,
         }
         else if(side == 1)
         {
-            lost = (line_found[y] && !component_row[y] && left_touch_edge[y]);
+            lost = (!component_row[y] && left_touch_edge[y]);
         }
         else
         {
-            lost = (line_found[y] && !component_row[y] && right_touch_edge[y]);
+            lost = (!component_row[y] && right_touch_edge[y]);
         }
 
         if(lost)
@@ -849,6 +849,17 @@ static void camera_update_edge_migration(void)
 
         if(!line_found[y] || component_row[y])
         {
+            if(!line_found[y] && !component_row[y])
+            {
+                if(left_boundary[y] <= edge_margin)
+                {
+                    left_touch_edge[y] = 1;
+                }
+                if(right_boundary[y] >= (MT9V03X_1_W - 1 - edge_margin))
+                {
+                    right_touch_edge[y] = 1;
+                }
+            }
             continue;
         }
 
