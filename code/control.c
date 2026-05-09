@@ -31,8 +31,6 @@ static uint16 stall_count_l = 0;
 static uint16 stall_count_r = 0;
 static uint16 cooldown_l = 0;
 static uint16 cooldown_r = 0;
-static uint8 corner_active = 0;
-static uint16 corner_lock_ticks = 0;
 
 static float clamp_float(float value, float min_value, float max_value)
 {
@@ -74,8 +72,6 @@ static void control_reset_runtime(void)
     stall_count_r = 0;
     cooldown_l = 0;
     cooldown_r = 0;
-    corner_active = 0;
-    corner_lock_ticks = 0;
     IncrementalPI_Reset(&speed_pid_l);
     IncrementalPI_Reset(&speed_pid_r);
     PositionPD_Reset(&turn_pid);
@@ -259,67 +255,36 @@ static int16 update_one_speed_loop(IncrementalPI_t *pid,
     return pwm;
 }
 
-static uint8 update_corner_state(uint8 raw_corner, int16 offset, uint8 lost_count)
-{
-    uint8 trigger = 0;
-
-    if(CONTROL_CORNER_ASSIST_ENABLE && raw_corner != 0)
-    {
-        if(abs(offset) >= CONTROL_CORNER_FEED_OFFSET_MIN || lost_count >= CONTROL_CORNER_FEED_LOST_MIN)
-        {
-            trigger = 1;
-        }
-    }
-
-    if(trigger)
-    {
-        corner_active = raw_corner;
-        corner_lock_ticks = CONTROL_CORNER_LOCK_TICKS;
-    }
-    else if(corner_lock_ticks > 0)
-    {
-        corner_lock_ticks--;
-    }
-    else if(lost_count <= CONTROL_CORNER_EXIT_LOST_MAX && abs(offset) <= CONTROL_CORNER_EXIT_OFFSET_MAX)
-    {
-        corner_active = 0;
-    }
-
-    return corner_active;
-}
-
 static void update_targets_from_camera(void)
 {
     int16 turn_limit;
     int16 active_base_speed;
-    uint8 raw_corner;
-    uint8 corner;
+    uint8 vision_state;
+    uint8 allow_vision_lost;
     int16 offset;
     uint8 lost_count;
     float error;
     float turn;
 
-    raw_corner = Camera_GetCornerType();
+    vision_state = Camera_GetVisionState();
     offset = Camera_GetTrackOffset();
     lost_count = Camera_GetLineLostCount();
-    corner = update_corner_state(raw_corner, offset, lost_count);
+    allow_vision_lost = (vision_state == VISION_COMPONENT ||
+                         vision_state == VISION_CORNER_LEFT ||
+                         vision_state == VISION_CORNER_RIGHT);
+
     active_base_speed = base_speed_cmd;
     if(!Camera_IsFrameReady())
     {
         active_base_speed = 0;
     }
-    else if(corner == 0 && lost_count >= CONTROL_LINE_LOST_STOP_COUNT)
+    else if(!allow_vision_lost && lost_count >= CONTROL_LINE_LOST_STOP_COUNT)
     {
         active_base_speed = 0;
     }
-    else if(corner == 0 && lost_count >= CONTROL_LINE_LOST_SLOW_COUNT)
+    else if(!allow_vision_lost && lost_count >= CONTROL_LINE_LOST_SLOW_COUNT)
     {
         active_base_speed = (int16)((int32)active_base_speed * CONTROL_LINE_LOST_SPEED_PERCENT / 100);
-    }
-
-    if(CONTROL_CORNER_ASSIST_ENABLE && corner != 0)
-    {
-        active_base_speed = (int16)((int32)active_base_speed * CONTROL_CORNER_SPEED_PERCENT / 100);
     }
 
     base_speed_target = approach_i16(base_speed_target, active_base_speed, CONTROL_BASE_RAMP_STEP);
@@ -330,20 +295,10 @@ static void update_targets_from_camera(void)
 #else
     error = (float)(CONTROL_TURN_SIGN * offset);
     turn = PositionPD_Calculate(&turn_pid, error);
-    turn_limit = (CONTROL_CORNER_ASSIST_ENABLE && corner != 0) ? CONTROL_CORNER_TURN_LIMIT : CONTROL_TURN_LIMIT_DEFAULT;
+    turn_limit = (vision_state == VISION_CORNER_LEFT || vision_state == VISION_CORNER_RIGHT) ?
+                 CONTROL_CORNER_TURN_LIMIT :
+                 CONTROL_TURN_LIMIT_DEFAULT;
     if(turn_limit > base_speed_target) turn_limit = base_speed_target;
-
-    if(CONTROL_CORNER_ASSIST_ENABLE && corner != 0)
-    {
-        if(corner == 1 && turn > -CONTROL_CORNER_FEED_FORWARD)
-        {
-            turn = -CONTROL_CORNER_FEED_FORWARD;
-        }
-        else if(corner == 2 && turn < CONTROL_CORNER_FEED_FORWARD)
-        {
-            turn = CONTROL_CORNER_FEED_FORWARD;
-        }
-    }
 
     turn_output = clamp_i16((int32)turn, -turn_limit, turn_limit);
 #endif
@@ -430,8 +385,8 @@ void Control_DisplayStatusTask(void)
     ips200_show_string(24, 122, param_page_name());
     ips200_show_string(72, 122, "B:");
     ips200_show_int(90, 122, base_speed_cmd, 4);
-    ips200_show_string(142, 122, "C:");
-    ips200_show_int(160, 122, Camera_GetCornerType(), 1);
+    ips200_show_string(142, 122, "Vp:");
+    ips200_show_int(166, 122, Camera_GetVisionPhase(), 2);
     ips200_show_string(178, 122, "O:");
     ips200_show_int(196, 122, Camera_GetTrackOffset(), 3);
 
