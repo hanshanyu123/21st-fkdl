@@ -549,3 +549,271 @@
 - 本次回退只涉及 `camera_update_vision_state()` 和新增宏，不改更早的直角补线逻辑，也不改元件保护的其他部分。
 - 目的：先把工程退回到“虽然还有问题，但至少没有被最新改动进一步破坏”的状态。
 - 未执行编译、烧录或硬件测试。
+
+## v3.0 - 2026-05-10 第一阶段切换到草莽语义视觉
+
+- 删除了 `code/camera.c` 和 `code/camera.h`，不再保留 `camera` 体系作为视觉主入口。
+- 新增 `code/use_img.c` 和 `code/use_img.h`，作为总调度层，对应草莽 `go.*`，主入口函数为 `use_img()`。
+- 新增 `code/process_img.c` 和 `code/process_img.h`，作为图像处理核心，对应草莽 `deal_img.*`。
+- `process_img.h` 直接改成草莽式全局量接口，主暴露语义包括：
+  - `IF / IF_L`
+  - `imgGray / imgOSTU`
+  - `mid_line`
+  - `b/t/l/r_lost_num`
+  - `b/t/l/r_center`
+  - `start_center_x/y`
+  - `end_center_x/y`
+  - `Stop_line`
+- 第一阶段已落常规主链函数：
+  - `getOSTUThreshold`
+  - `Get_imgOSTU`
+  - `Dashedline_Makeup`
+  - `get_start_point`
+  - `search_l_r`
+  - `Get_lost_tip`
+  - `Get_start_center`
+  - `Get_top_straightline`
+  - `Left_curve_line`
+  - `Right_curve_line`
+- 明确没有保留旧 `camera.c` 的 `VISION_*`、`track_offset`、元件状态机、直角状态机等旧语义。
+- `user/cpu0_main.c` 已重写并切到 `use_img.h` / `use_img()`，同时移除了受编码影响的乱码中文注释，改为稳定的 ASCII 注释。
+- `code/control.c` 已去掉对 `camera.h` 和 `Camera_Get*` 的直接依赖，改为读取 `process_img` 全局量并在本文件内做临时偏差/丢线映射。
+- `Debug/code/subdir.mk` 已从 `camera.c` 切换到 `process_img.c` 和 `use_img.c`，去掉旧视觉源文件的构建项。
+- 本阶段按约定不追求控制层兼容，也不追求工程可编译，目标仅是把视觉内核切成草莽语义。
+- 未执行编译、烧录或硬件测试。
+
+## v3.1 - 2026-05-10 补齐草莽式边界跟踪主链
+
+- 将 `code/process_img.c` 中的核心巡线链从简化版继续改成更接近草莽原实现的版本，重点替换了：
+  - `get_start_point()`
+  - `search_l_r()`
+  - `Get_lost_tip()`
+  - `Get_start_center()`
+  - `Get_top_straightline()`
+  - `Left_curve_line()`
+  - `Right_curve_line()`
+- 新增并公开了草莽式特征变量：
+  - `dir_l / dir_r`
+  - `hightest`
+  - `leftmost / rightmost / topmost`
+  - `l/r/t/b_lost_tip`
+  - `dis_Solidline`
+  - `white_width`
+- 当前移植策略仍然是：
+  - 保留本工程现有阈值和分辨率适配
+  - 先把草莽的“起点 -> 八邻域边界跟踪 -> 四向丢边特征 -> 直线/曲线中线”主链落下来
+  - 暂不接十字、环岛、断路、停车线
+- 顺手修正了两个明显风险点：
+  - 边界跟踪循环的点数组越界风险
+  - 顶部双特征筛选时的临时数组写越界风险
+- 未执行编译、烧录或硬件测试。
+
+## v3.2 - 2026-05-10 补齐草莽式视觉公共语义
+
+- 继续补齐 `process_img.h/.c`，目标不是“接近草莽”，而是先把视觉模块对外暴露的语义和数据面做成草莽接口。
+- `process_img.h` 新增并公开了草莽式枚举和全局量：
+  - `Elements_Mode / Elements_Lock / Annulus_Mode / RUN_Dir`
+  - `imgTran / img2wifi`
+  - `Length_5cm / k1 / k2`
+  - `Make_up_num`
+  - `white_row_max/min`
+  - `white_col_max/min`
+  - `stopline / annulus / disappear` 相关状态量
+  - `EXTERN_sum / EXTERN_ROW`
+  - `Goto_U/D/L/R` 及组合拓扑标志
+- `process_img.c` 已补上对应定义和初始化，现阶段即使部分变量还未被主链完全使用，也已经回到草莽视觉体系需要的公共面。
+- 同时补了几项基础初始化：
+  - `img_threshold_group`
+  - `img2wifi`
+  - `Make_up_num`
+  - `Length_5cm`
+  - `k1 / k2`
+- 本次不改控制层，不新增当前工程自定义视觉状态机。
+- 未执行编译、烧录或硬件测试。
+
+## v3.3 - 2026-05-10 收缩视觉 RAM 占用
+
+- 本次只处理链接失败的主因：视觉模块新增的草莽公共缓冲导致 RAM 连续区溢出。
+- 将以下大缓冲改为接口别名，不再单独分配：
+  - `imgGray -> mt9v03x_image_2`
+  - `img2wifi -> mt9v03x_image_2`
+  - `imgTran -> imgOSTU`
+- 同步删除了 `use_img.c` 中把 `mt9v03x_image_2` 再拷贝到 `imgGray` 的冗余复制。
+- 目的不是改变视觉行为，而是先把草莽接口面保住，同时避免重复占用几十 KB 连续 RAM。
+- 这意味着当前阶段：
+  - `imgGray` 和摄像头接收缓冲共用存储
+  - `img2wifi` 先与灰度图共用存储
+  - `imgTran` 先与二值图共用存储
+- 后续如果移植到需要 `imgTran` 独立拓扑语义的函数，再单独拆回来或改成更省 RAM 的专用结构。
+- 未执行编译、烧录或硬件测试。
+
+## v3.4 - 2026-05-10 重写草莽式预处理主链
+
+- 将 `imgGray` 输入缓冲修正为 `mt9v03x_image_1`，与 `mt9v03x_finish_flag_1` / `mt9v03x_1` 初始化保持一致。
+- 将 `imgTran` 改为独立占用 `mt9v03x_image_2`，恢复草莽 `Dashedline_Makeup()` 所需的独立拓扑标记缓冲。
+- `img2wifi` 现阶段退化映射到 `imgOSTU`，不再额外占 RAM。
+- `Get_imgOSTU()` 已从简化版改成更接近草莽原实现的版本：
+  - 三段阈值组
+  - 底向顶翻转取样
+  - 8 邻域膨胀式确认白点
+  - 同步统计 `white_num_row/col`
+- `Dashedline_Makeup()` 已从“单点横向补线”重写为更接近草莽原实现的四步：
+  - 行列白点极值统计
+  - `imgTran` 拓扑方向标记
+  - `Make_up / LandR` 修补点生成与 `EXTERN_*` 统计
+  - 左右边界白点迁移
+  - 顶部白点迁移
+  - 末尾统一边界黑框清理
+- 本次不改控制层，也不改 `search_l_r()` / `Get_lost_tip()` 之外的更高层元素逻辑。
+- 未执行编译、烧录或硬件测试。
+
+## v3.5 - 2026-05-10 补齐草莽式丢边补录逻辑
+
+- 继续补齐 `Get_lost_tip()` 末尾在草莽原版里的“实线补录特征”逻辑。
+- 当 `l_lost_tip + r_lost_tip == 0` 且最高点已到顶部时，不再只是简单置位 `dis_Solidline`，而是进一步：
+  - 统计左侧实线中断段并补录 `Lost_Left`
+  - 统计右侧实线中断段并补录 `Lost_Right`
+  - 若左右都不成立，则按顶部最高点横向补录 `Lost_Top`
+- 这样四向特征在“边界到顶但没有自然丢边线”的场景下，更接近草莽原版行为。
+- 顺手去掉了一处无效残留赋值，不改行为。
+- 未执行编译、烧录或硬件测试。
+
+## v3.6 - 2026-05-10 对齐草莽式总调度骨架
+
+- 将 `use_img()` 的主流程顺序继续往草莽 `go()` 对齐：
+  - 新增 `standard()` 帧前初始化
+  - 增加 `deal_runing / dealimg_finish_flag` 过程标志
+  - 使用 `IF_L = IF`、`Stop_line = 0`、`memset(mid_line, XM/2, ...)` 的草莽式帧前重置顺序
+  - 加入 `disappear_flag == 0 && get_start_point()` 的入口门控
+- 将常规巡线分流独立成 `process_regular_track()`，使主入口结构更接近草莽 `go()` 的“找起点 -> 边界 -> 丢边特征 -> 常规巡线分发”组织方式。
+- 这一步不硬接还没移植完的 `Go_Annulus / Deal_crossroads / Get_stopline / Deal_disappear`，只先把调度骨架对齐。
+- 未执行编译、烧录或硬件测试。
+
+## v3.7 - 2026-05-10 补齐草莽高层主链接口
+
+- 在 `process_img.h/.c` 中补齐草莽高层视觉主链需要的接口：
+  - `Get_Annulus()`
+  - `Go_Annulus()`
+  - `Deal_crossroads()`
+  - `Get_stopline()`
+  - `Disappear_detection()`
+  - `Deal_disappear()`
+- 当前这些函数先保守返回，不引入未移植完成的高层场景逻辑，但接口面已经完整。
+- 在 `use_img()` 中把调度顺序继续对齐到草莽 `go()`：
+  - `Annulus_flag = Go_Annulus()`
+  - `if(!Annulus_flag) Stop_line = Deal_crossroads()`
+  - `stopline_flag += Get_stopline()`
+  - `disappear_flag = Deal_disappear()`
+- 现在视觉主链从入口形式上已经更接近草莽完整调用顺序，后续可以直接往这些函数里逐步填真实实现。
+- 未执行编译、烧录或硬件测试。
+
+## v3.8 - 2026-05-10 补齐草莽累计里程 Length
+
+- 为后续真实移植 `Get_stopline / Deal_disappear / Go_Annulus` 补上草莽依赖的累计里程量 `Length`。
+- 在 `process_img.h/.c` 中新增：
+  - `extern float Length;`
+  - `void ProcessImg_UpdateMotion10ms(int16 speed_l, int16 speed_r);`
+- 里程积分策略：
+  - 在 `Control_Task10ms()` 中读取到左右编码器 10ms 速度后
+  - 取左右轮绝对计数均值
+  - 用 `0.003897 mm/count` 的换算系数累加到 `Length`
+- 这样做的目的不是完成高层元素逻辑，而是先把草莽高层逻辑共同依赖的距离基准补齐，避免后面继续用空壳函数。
+- 未执行编译、烧录或硬件测试。
+
+## v3.9 - 2026-05-10 收紧 OTSU 阈值与二值化实现
+
+- 继续只对齐草莽底层视觉输入，不碰高层场景和控制层。
+- 在 `process_img.c` 中新增 `getGrayscaleHistogram()`：
+  - 统计当前有效处理区的灰度直方图
+  - 同时更新 `minGray / maxGray`
+- 将 `getOSTUThreshold()` 改成更接近草莽的实现：
+  - 先按 `minGray / maxGray` 裁剪灰度范围
+  - 用前缀和与前缀加权和计算类间方差
+  - 保留 early-stop 风格
+  - 增加 `previousThreshold` 作为异常情况下的回退阈值
+- 将 `Get_imgOSTU()` 调整为更接近草莽的数据路径：
+  - 先 `reset_process_state()`
+  - 再更新三段阈值组
+  - 统一使用 `_IMG_H - i` / `_IMG_H - y` 的草莽式底向顶取样
+- 这一步的目的，是让后续 `Dashedline_Makeup / search_l_r / Get_lost_tip` 吃到的输入图进一步向草莽风格对齐。
+- 未执行编译、烧录或硬件测试。
+
+## v3.10 - 2026-05-10 修正二值化与虚线修补的时序
+
+- 对比草莽后，发现当前工程在 `Get_imgOSTU()` 末尾提前执行了边框清理。
+- 草莽原流程里，边框清理属于 `Dashedline_Makeup()` 的一部分，而不是二值化结束后立刻执行。
+- 提前清理会导致：
+  - `imgOSTU` 已被改写
+  - 但 `white_num_row / white_num_col` 仍然保留清理前统计
+  - 于是 `Dashedline_Makeup()` 开头使用的白点统计与当前二值图不一致
+- 本次移除了 `Get_imgOSTU()` 末尾的 `apply_process_frame()`，把边框清理重新收回到 `Dashedline_Makeup()` 内部统一处理。
+- 这一步只修正草莽式处理时序，不改高层场景和控制逻辑。
+- 未执行编译、烧录或硬件测试。
+
+## v3.11 - 2026-05-10 收紧 search_l_r 的生长节奏
+
+- 对比草莽后，当前 `search_l_r()` 还有两处不一致：
+  - 主循环预算比草莽少一轮
+  - 左右候选点的中心更新时机放在整轮候选收集后，而不是像草莽那样在 8 邻域扫描过程中持续更新
+- 本次在 `process_img.c` 中做了两项收紧：
+  - 将主循环改回草莽式 `break_flag = USE_num; while(break_flag--)`
+  - 将左右边界候选点的中心更新逻辑移到 8 邻域扫描过程中执行，使边界生长节奏更接近草莽原实现
+- 这一步只收紧八邻域边界跟踪，不改 `Get_lost_tip()`、高层场景或控制层。
+- 未执行编译、烧录或硬件测试。
+
+## v3.12 - 2026-05-10 对齐草莽式边框压回清理
+
+- 对比草莽后，发现当前 `apply_process_frame()` 只是在 `Dashedline_Makeup()` 末尾直接清掉边框外两圈黑框。
+- 草莽原逻辑在清黑框前，会先把贴在 `Deal_Bottom/Top/Left/Right` 外侧一到两格的白点压回处理边界，再清理外圈。
+- 如果只抹黑不压回，会把本该保留的贴边白线直接删掉，导致虚线修补后的边界形态和草莽不一致。
+- 本次将 `apply_process_frame()` 改成草莽式边框压回流程：
+  - 底部先检查 `Deal_Bottom-1/-2` 的白点并压回 `Deal_Bottom`
+  - 顶部先检查 `Deal_Top+1/+2` 的白点并压回 `Deal_Top`
+  - 左右边界同理先压回 `Deal_Left/Right`
+  - 再统一清掉边界外两圈
+- 这一步只修正 `Dashedline_Makeup()` 相关的边框清理口径，不改其他模块。
+- 未执行编译、烧录或硬件测试。
+
+## v3.13 - 2026-05-10 标定表改为草莽原表映射
+
+- 对比草莽后，当前 `init_white_width_table()` 仍然在用线性拟合生成：
+  - `white_width[]`
+  - `Length_5cm[]`
+  - `k1[]`
+  - `k2[]`
+- 这会让普通巡线虽然结构接近草莽，但几何尺度仍然不是草莽口径。
+- 本次改动只处理标定表来源：
+  - 将草莽原工程里的 `white_width[70]`、`Length_5cm[70]`、`k2[70]` 作为源表写入当前工程
+  - 由于你当前摄像头分辨率是 `188x120`，草莽原表只有 70 行，不能直接硬贴
+  - 因此改为：以草莽 70 行原表为源，线性映射到当前 `YM=120`
+  - `k1[]` 继续按 `25.0f / white_width[y]` 生成，保持和当前浮点实现一致
+- 这样处理后的效果是：
+  - 表的走势和量级回到草莽原标定
+  - 同时保持对当前 120 行分辨率的适配
+- 这一步只处理标定表，不改其他视觉逻辑。
+- 未执行编译、烧录或硬件测试。
+
+## v3.0 - 2026-05-10 架构重构：草莽视觉体系移植
+
+- **完全重写视觉层**，从自研连通追踪体系迁移到草莽缩微光电开源架构。
+- 删除 `code/camera.c` / `code/camera.h`（~2000行），新增：
+  - `code/process_img.c` / `process_img.h`：图像处理核心，移植草莽 `deal_img.c`
+  - `code/use_img.c` / `use_img.h`：顶层调度，对应草莽 `go.c`
+- 已移植的草莽功能：
+  - Otsu 阈值（直方图 40-160，输出 70-160）+ 三区自适应阈值
+  - **9 点腐蚀+膨胀**二值化（k=0→8，含中心像素基础阈值检查）
+  - **8 邻域边界追踪**（search_l_r，左右独立方向种子，紫色 Lost_line 机制）
+  - **Dashedline_Makeup**（虚线补全、imgTran 拓扑标记、Make_up/LandR 断点分类、全白检测）
+  - **Get_lost_tip**（四方向丢块清洗去噪合并）
+  - **Get_start_center**（底部起点中心计算）
+  - **Left_curve_line / Right_curve_line**（直角弯补线）
+  - **Get_top_straightline**（直道补线）
+  - 透视标定表移植（white_width、Length_5cm、k1、k2，草莽 70 行→YM 120 行线性映射）
+- 暂留空（return 0）的功能：Go_Annulus、Deal_crossroads、Get_stopline、Deal_disappear
+- 控制层适配：
+  - `cpu0_main.c`：cam_init → use_img_init，image_process_task → use_img
+  - `control.c`：旧 Camera_Get* API 替换为 vision_* 本地函数，调用 ProcessImg_UpdateMotion10ms
+  - `imgGray`/`imgTran` 复用 mt9v03x_image_1/2（节省两张 120x188 数组 = 45KB RAM）
+- 直角辅助暂时关闭（corner_active=0, allow_vision_lost=0），优先验证基础巡线稳定性。
+- 修改者：用户 + Claude (Anthropic AI Agent)
+- 未执行编译、烧录或硬件测试。

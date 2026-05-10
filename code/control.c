@@ -1,8 +1,9 @@
 #include "control.h"
-#include "camera.h"
 #include "imu.h"
 #include "motor.h"
 #include "pid.h"
+#include "process_img.h"
+#include "use_img.h"
 #include "zf_device_ips200.h"
 #include "zf_device_key.h"
 #include <stdlib.h>
@@ -31,6 +32,67 @@ static uint16 stall_count_l = 0;
 static uint16 stall_count_r = 0;
 static uint16 cooldown_l = 0;
 static uint16 cooldown_r = 0;
+
+static int16 vision_track_offset(void)
+{
+    int32 sum = 0;
+    int32 weight_sum = 0;
+
+    for(int y = Deal_Bottom; y <= Deal_Top; y++)
+    {
+        sum += ((int32)mid_line[y] - (XM / 2)) * y;
+        weight_sum += y;
+    }
+
+    if(weight_sum == 0)
+    {
+        return 0;
+    }
+
+    return (int16)(sum / weight_sum);
+}
+
+static uint8 vision_line_lost_count(void)
+{
+    uint8 lost = 0;
+
+    if(l_data_statics == 0 || r_data_statics == 0)
+    {
+        return 120;
+    }
+
+    for(int y = Deal_Bottom; y <= Deal_Top; y++)
+    {
+        if(mid_line[y] == XM / 2)
+        {
+            lost++;
+        }
+    }
+
+    return lost;
+}
+
+static uint8 vision_state_value(void)
+{
+    if(l_data_statics == 0 || r_data_statics == 0)
+    {
+        return 4;
+    }
+
+    return 0;
+}
+
+static uint8 vision_phase_value(void)
+{
+    return (uint8)IF;
+}
+
+static uint8 vision_confidence_value(void)
+{
+    uint32 confidence = l_data_statics + r_data_statics;
+    if(confidence > 99) confidence = 99;
+    return (uint8)confidence;
+}
 
 static float clamp_float(float value, float min_value, float max_value)
 {
@@ -267,15 +329,14 @@ static void update_targets_from_camera(void)
     float turn;
     uint8 corner_active;
 
-    vision_state = Camera_GetVisionState();
-    offset = Camera_GetTrackOffset();
-    lost_count = Camera_GetLineLostCount();
-    corner_active = (vision_state == VISION_CORNER_LEFT || vision_state == VISION_CORNER_RIGHT);
-    allow_vision_lost = (vision_state == VISION_COMPONENT ||
-                         corner_active);
+    vision_state = vision_state_value();
+    offset = vision_track_offset();
+    lost_count = vision_line_lost_count();
+    corner_active = 0;
+    allow_vision_lost = 0;
 
     active_base_speed = base_speed_cmd;
-    if(!Camera_IsFrameReady())
+    if(!use_img_is_ready())
     {
         active_base_speed = 0;
     }
@@ -327,6 +388,7 @@ void Control_Task10ms(void)
 
     key_task_10ms();
     Motor_ReadEncoder10ms(&speed_l, &speed_r);
+    ProcessImg_UpdateMotion10ms(speed_l, speed_r);
 
     if((abs(speed_l) > ENCODER_SPEED_STOP_LIMIT) || (abs(speed_r) > ENCODER_SPEED_STOP_LIMIT))
     {
@@ -389,9 +451,9 @@ void Control_DisplayStatusTask(void)
     ips200_show_string(72, 122, "B:");
     ips200_show_int(90, 122, base_speed_cmd, 4);
     ips200_show_string(142, 122, "Vp:");
-    ips200_show_int(166, 122, Camera_GetVisionPhase(), 2);
+    ips200_show_int(166, 122, vision_phase_value(), 2);
     ips200_show_string(178, 122, "O:");
-    ips200_show_int(196, 122, Camera_GetTrackOffset(), 3);
+    ips200_show_int(196, 122, vision_track_offset(), 3);
 
     ips200_show_string(0, 140, "T:");
     ips200_show_int(18, 140, target_l, 5);
@@ -406,7 +468,7 @@ void Control_DisplayStatusTask(void)
     ips200_show_string(132, 158, "F:");
     ips200_show_int(150, 158, fault_stop, 1);
     ips200_show_string(174, 158, "L:");
-    ips200_show_int(192, 158, Camera_GetLineLostCount(), 3);
+    ips200_show_int(192, 158, vision_line_lost_count(), 3);
 
     ips200_show_string(0, 176, "KP:");
     ips200_show_float(26, 176, speed_kp, 2, 1);
@@ -416,11 +478,11 @@ void Control_DisplayStatusTask(void)
     ips200_show_float(170, 176, turn_kp, 2, 1);
 
     ips200_show_string(0, 194, "Th:");
-    ips200_show_int(26, 194, Camera_GetThreshold(), 3);
+    ips200_show_int(26, 194, nowThreshold, 3);
     ips200_show_string(72, 194, "Cp:");
-    ips200_show_int(98, 194, Camera_GetComponentRowCount(), 3);
+    ips200_show_int(98, 194, 0, 3);
     ips200_show_string(144, 194, "Q:");
-    ips200_show_int(170, 194, Camera_GetLineConfidence(), 3);
+    ips200_show_int(170, 194, vision_confidence_value(), 3);
 }
 
 int16 Control_GetBaseSpeedCommand(void) { return base_speed_cmd; }
