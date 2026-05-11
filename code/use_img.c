@@ -6,8 +6,55 @@
 
 #define DISPLAY_IMAGE_DIV    2
 #define DISPLAY_REFRESH_SKIP 10
+#define CONTROL_LOOKAHEAD_ROW ((Deal_Bottom + Deal_Top) / 2)
 
 static uint8 frame_ready = 0;
+static volatile uint8 snapshot_centerpoint_target = (uint8)(XM / 2);
+static uint8 snapshot_mid_line[YM];
+static volatile uint32 snapshot_l_data_statics = 0;
+static volatile uint32 snapshot_r_data_statics = 0;
+static volatile uint8 snapshot_phase = straightlineS;
+
+static uint8 compute_centerpoint_target(void)
+{
+    int32 sum = 0;
+    int32 count = 0;
+
+    for(int y = CONTROL_LOOKAHEAD_ROW - 6; y <= CONTROL_LOOKAHEAD_ROW + 6; y++)
+    {
+        if(y < Deal_Bottom || y > Deal_Top)
+        {
+            continue;
+        }
+
+        if(imgOSTU[y][mid_line[y]] == Control_line || imgOSTU[y][mid_line[y]] == Judge_line)
+        {
+            sum += mid_line[y];
+            count++;
+        }
+    }
+
+    if(count == 0)
+    {
+        return mid_line[CONTROL_LOOKAHEAD_ROW];
+    }
+
+    return (uint8)(sum / count);
+}
+
+static void publish_visual_snapshot(void)
+{
+    uint32 interrupt_state = interrupt_global_disable();
+
+    snapshot_centerpoint_target = compute_centerpoint_target();
+    memcpy(snapshot_mid_line, mid_line, sizeof(snapshot_mid_line));
+    snapshot_l_data_statics = l_data_statics;
+    snapshot_r_data_statics = r_data_statics;
+    snapshot_phase = (uint8)IF;
+    frame_ready = 1;
+
+    interrupt_global_enable(interrupt_state);
+}
 
 static void process_regular_track(void)
 {
@@ -50,6 +97,35 @@ static void show_imgOSTU(void)
                            XM / DISPLAY_IMAGE_DIV,
                            YM / DISPLAY_IMAGE_DIV,
                            0);
+
+    for(int y = 0; y < YM; y += DISPLAY_IMAGE_DIV)
+    {
+        for(int x = 0; x < XM; x += DISPLAY_IMAGE_DIV)
+        {
+            uint8 pixel = imgOSTU[y][x];
+            uint16 color = 0;
+
+            if(pixel == Left_line)
+            {
+                color = RGB565_GREEN;
+            }
+            else if(pixel == Right_line)
+            {
+                color = RGB565_BLUE;
+            }
+            else if(pixel == Lost_line)
+            {
+                color = RGB565_PURPLE;
+            }
+
+            if(color != 0)
+            {
+                ips200_draw_point((uint16)(x / DISPLAY_IMAGE_DIV),
+                                  (uint16)(y / DISPLAY_IMAGE_DIV),
+                                  color);
+            }
+        }
+    }
 
     for(int y = 0; y < YM; y += DISPLAY_IMAGE_DIV)
     {
@@ -102,9 +178,12 @@ void use_img(void)
         }
 
         disappear_flag = Deal_disappear();
+        if(mid_line_valid)
+        {
+            publish_visual_snapshot();
+        }
         deal_runing = 0;
         dealimg_finish_flag = 1;
-        frame_ready = 1;
     }
 
     show_imgOSTU();
@@ -113,4 +192,33 @@ void use_img(void)
 uint8 use_img_is_ready(void)
 {
     return frame_ready;
+}
+
+uint8 use_img_snapshot_centerpoint_target(void)
+{
+    return snapshot_centerpoint_target;
+}
+
+uint8 use_img_snapshot_mid_line(uint8 y)
+{
+    if(y >= YM)
+    {
+        return (uint8)(XM / 2);
+    }
+    return snapshot_mid_line[y];
+}
+
+uint32 use_img_snapshot_l_data_statics(void)
+{
+    return snapshot_l_data_statics;
+}
+
+uint32 use_img_snapshot_r_data_statics(void)
+{
+    return snapshot_r_data_statics;
+}
+
+uint8 use_img_snapshot_phase(void)
+{
+    return snapshot_phase;
 }

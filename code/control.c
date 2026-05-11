@@ -35,46 +35,12 @@ static uint16 cooldown_r = 0;
 
 static int16 vision_track_offset(void)
 {
-    int32 sum = 0;
-    int32 weight_sum = 0;
-
-    for(int y = Deal_Bottom; y <= Deal_Top; y++)
-    {
-        sum += ((int32)mid_line[y] - (XM / 2)) * y;
-        weight_sum += y;
-    }
-
-    if(weight_sum == 0)
-    {
-        return 0;
-    }
-
-    return (int16)(sum / weight_sum);
-}
-
-static uint8 vision_line_lost_count(void)
-{
-    uint8 lost = 0;
-
-    if(l_data_statics == 0 || r_data_statics == 0)
-    {
-        return 120;
-    }
-
-    for(int y = Deal_Bottom; y <= Deal_Top; y++)
-    {
-        if(mid_line[y] == XM / 2)
-        {
-            lost++;
-        }
-    }
-
-    return lost;
+    return (int16)use_img_snapshot_centerpoint_target() - (XM / 2);
 }
 
 static uint8 vision_state_value(void)
 {
-    if(l_data_statics == 0 || r_data_statics == 0)
+    if(use_img_snapshot_l_data_statics() == 0 || use_img_snapshot_r_data_statics() == 0)
     {
         return 4;
     }
@@ -84,12 +50,12 @@ static uint8 vision_state_value(void)
 
 static uint8 vision_phase_value(void)
 {
-    return (uint8)IF;
+    return use_img_snapshot_phase();
 }
 
 static uint8 vision_confidence_value(void)
 {
-    uint32 confidence = l_data_statics + r_data_statics;
+    uint32 confidence = use_img_snapshot_l_data_statics() + use_img_snapshot_r_data_statics();
     if(confidence > 99) confidence = 99;
     return (uint8)confidence;
 }
@@ -321,32 +287,18 @@ static void update_targets_from_camera(void)
 {
     int16 turn_limit;
     int16 active_base_speed;
-    uint8 vision_state;
-    uint8 allow_vision_lost;
     int16 offset;
-    uint8 lost_count;
     float error;
     float turn;
     uint8 corner_active;
 
-    vision_state = vision_state_value();
     offset = vision_track_offset();
-    lost_count = vision_line_lost_count();
     corner_active = 0;
-    allow_vision_lost = 0;
 
     active_base_speed = base_speed_cmd;
     if(!use_img_is_ready())
     {
         active_base_speed = 0;
-    }
-    else if(!allow_vision_lost && lost_count >= CONTROL_LINE_LOST_STOP_COUNT)
-    {
-        active_base_speed = 0;
-    }
-    else if(!allow_vision_lost && lost_count >= CONTROL_LINE_LOST_SLOW_COUNT)
-    {
-        active_base_speed = (int16)((int32)active_base_speed * CONTROL_LINE_LOST_SPEED_PERCENT / 100);
     }
 
     base_speed_target = approach_i16(base_speed_target, active_base_speed, CONTROL_BASE_RAMP_STEP);
@@ -467,8 +419,8 @@ void Control_DisplayStatusTask(void)
     ips200_show_int(72, 158, pwm_r, 5);
     ips200_show_string(132, 158, "F:");
     ips200_show_int(150, 158, fault_stop, 1);
-    ips200_show_string(174, 158, "L:");
-    ips200_show_int(192, 158, vision_line_lost_count(), 3);
+    ips200_show_string(174, 158, "V:");
+    ips200_show_int(192, 158, vision_state_value(), 2);
 
     ips200_show_string(0, 176, "KP:");
     ips200_show_float(26, 176, speed_kp, 2, 1);

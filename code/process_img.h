@@ -104,6 +104,7 @@ extern uint8 imgOSTU[YM][XM];
 extern uint8 white_num_row[YM];
 extern uint8 white_num_col[XM];
 extern uint8 mid_line[YM];
+extern uint8 mid_line_valid;
 
 extern uint8 start_center;
 extern uint8 start_center_x;

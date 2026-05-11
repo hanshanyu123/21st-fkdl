@@ -36,6 +36,7 @@ uint8 imgOSTU[YM][XM];
 uint8 white_num_row[YM];
 uint8 white_num_col[XM];
 uint8 mid_line[YM];
+uint8 mid_line_valid = 0;
 uint8 Make_up_num[YM];
 uint8 white_row_max[2] = {0};
 uint8 white_row_min[2] = {0};
@@ -241,6 +242,7 @@ static void reset_process_state(void)
     memset(dir_l, 0, sizeof(dir_l));
     memset(dir_r, 0, sizeof(dir_r));
     memset(mid_line, XM / 2, sizeof(mid_line));
+    mid_line_valid = 0;
     memset(Make_up_num, 0, sizeof(Make_up_num));
     memset(b_center, 0, sizeof(b_center));
     memset(l_center, 0, sizeof(l_center));
@@ -363,6 +365,7 @@ static uint8 draw_control_line(uint8 x1, uint8 y1, uint8 x2, uint8 y2, uint8 col
         imgOSTU[y][x] = color;
     }
 
+    mid_line_valid = 1;
     return black_num;
 }
 
@@ -1891,6 +1894,7 @@ uint8 Get_top_straightline(void)
                 mid_line[y] = right_line[y];
                 imgOSTU[y][mid_line[y]] = Control_line;
             }
+            mid_line_valid = 1;
         }
         else
         {
@@ -1901,6 +1905,7 @@ uint8 Get_top_straightline(void)
                 mid_line[y] = left_line[y];
                 imgOSTU[y][mid_line[y]] = Control_line;
             }
+            mid_line_valid = 1;
         }
     }
 
