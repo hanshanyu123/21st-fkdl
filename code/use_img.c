@@ -1,19 +1,33 @@
 #include "use_img.h"
 #include "process_img.h"
+#include "wifi_img.h"
 #include "zf_device_ips200.h"
 #include "zf_device_mt9v03x_double.h"
 #include <string.h>
 
-#define DISPLAY_IMAGE_DIV    2
+#define DISPLAY_IMAGE_DIV    1
 #define DISPLAY_REFRESH_SKIP 10
 #define CONTROL_LOOKAHEAD_ROW ((Deal_Bottom + Deal_Top) / 2)
 
-static uint8 frame_ready = 0;
-static volatile uint8 snapshot_centerpoint_target = (uint8)(XM / 2);
-static uint8 snapshot_mid_line[YM];
-static volatile uint32 snapshot_l_data_statics = 0;
-static volatile uint32 snapshot_r_data_statics = 0;
-static volatile uint8 snapshot_phase = straightlineS;
+typedef struct
+{
+    uint8 valid;
+    uint8 centerpoint_target;
+    uint8 phase;
+    uint32 l_data_statics;
+    uint32 r_data_statics;
+    uint8 mid_line[YM];
+} VisualControlSnapshot_t;
+
+static volatile VisualControlSnapshot_t visual_snapshot = {0};
+
+static void fill_mid_line_buffer(uint8 *buffer, uint8 value)
+{
+    for(uint16 y = 0; y < YM; y++)
+    {
+        buffer[y] = value;
+    }
+}
 
 static uint8 compute_centerpoint_target(void)
 {
@@ -44,14 +58,53 @@ static uint8 compute_centerpoint_target(void)
 
 static void publish_visual_snapshot(void)
 {
-    uint32 interrupt_state = interrupt_global_disable();
+    VisualControlSnapshot_t next_snapshot;
 
-    snapshot_centerpoint_target = compute_centerpoint_target();
-    memcpy(snapshot_mid_line, mid_line, sizeof(snapshot_mid_line));
-    snapshot_l_data_statics = l_data_statics;
-    snapshot_r_data_statics = r_data_statics;
-    snapshot_phase = (uint8)IF;
-    frame_ready = 1;
+    next_snapshot.valid = 1;
+    next_snapshot.centerpoint_target = compute_centerpoint_target();
+    next_snapshot.phase = (uint8)IF;
+    next_snapshot.l_data_statics = l_data_statics;
+    next_snapshot.r_data_statics = r_data_statics;
+    for(uint16 y = 0; y < YM; y++)
+    {
+        next_snapshot.mid_line[y] = mid_line[y];
+    }
+
+    uint32 interrupt_state = interrupt_global_disable();
+    visual_snapshot.valid = next_snapshot.valid;
+    visual_snapshot.centerpoint_target = next_snapshot.centerpoint_target;
+    visual_snapshot.phase = next_snapshot.phase;
+    visual_snapshot.l_data_statics = next_snapshot.l_data_statics;
+    visual_snapshot.r_data_statics = next_snapshot.r_data_statics;
+    for(uint16 y = 0; y < YM; y++)
+    {
+        visual_snapshot.mid_line[y] = next_snapshot.mid_line[y];
+    }
+
+    interrupt_global_enable(interrupt_state);
+}
+
+static void invalidate_visual_snapshot(void)
+{
+    VisualControlSnapshot_t next_snapshot;
+
+    next_snapshot.valid = 0;
+    next_snapshot.centerpoint_target = (uint8)(XM / 2);
+    next_snapshot.phase = straightlineS;
+    next_snapshot.l_data_statics = 0;
+    next_snapshot.r_data_statics = 0;
+    fill_mid_line_buffer(next_snapshot.mid_line, (uint8)(XM / 2));
+
+    uint32 interrupt_state = interrupt_global_disable();
+    visual_snapshot.valid = next_snapshot.valid;
+    visual_snapshot.centerpoint_target = next_snapshot.centerpoint_target;
+    visual_snapshot.phase = next_snapshot.phase;
+    visual_snapshot.l_data_statics = next_snapshot.l_data_statics;
+    visual_snapshot.r_data_statics = next_snapshot.r_data_statics;
+    for(uint16 y = 0; y < YM; y++)
+    {
+        visual_snapshot.mid_line[y] = next_snapshot.mid_line[y];
+    }
 
     interrupt_global_enable(interrupt_state);
 }
@@ -83,17 +136,13 @@ static void show_imgOSTU(void)
 {
     static uint8 refresh_cnt = 0;
 
-    if(!frame_ready)
-    {
-        return;
-    }
     if(++refresh_cnt < DISPLAY_REFRESH_SKIP)
     {
         return;
     }
     refresh_cnt = 0;
 
-    ips200_show_gray_image(0, 0, imgOSTU[0], XM, YM,
+    ips200_show_gray_image(0, 0, imgGray[0], XM, YM,
                            XM / DISPLAY_IMAGE_DIV,
                            YM / DISPLAY_IMAGE_DIV,
                            0);
@@ -105,7 +154,15 @@ static void show_imgOSTU(void)
             uint8 pixel = imgOSTU[y][x];
             uint16 color = 0;
 
-            if(pixel == Left_line)
+            if(pixel == Control_line)
+            {
+                color = RGB565_RED;
+            }
+            else if(pixel == Judge_line)
+            {
+                color = RGB565_YELLOW;
+            }
+            else if(pixel == Left_line)
             {
                 color = RGB565_GREEN;
             }
@@ -126,17 +183,11 @@ static void show_imgOSTU(void)
             }
         }
     }
-
-    for(int y = 0; y < YM; y += DISPLAY_IMAGE_DIV)
-    {
-        ips200_draw_point((uint16)(mid_line[y] / DISPLAY_IMAGE_DIV),
-                          (uint16)(y / DISPLAY_IMAGE_DIV),
-                          RGB565_RED);
-    }
 }
 
 void use_img_init(void)
 {
+    invalidate_visual_snapshot();
     mt9v03x_double_init(mt9v03x_1);
 }
 
@@ -182,6 +233,11 @@ void use_img(void)
         {
             publish_visual_snapshot();
         }
+        else
+        {
+            invalidate_visual_snapshot();
+        }
+        wifi_img_send();
         deal_runing = 0;
         dealimg_finish_flag = 1;
     }
@@ -191,12 +247,12 @@ void use_img(void)
 
 uint8 use_img_is_ready(void)
 {
-    return frame_ready;
+    return visual_snapshot.valid;
 }
 
 uint8 use_img_snapshot_centerpoint_target(void)
 {
-    return snapshot_centerpoint_target;
+    return visual_snapshot.centerpoint_target;
 }
 
 uint8 use_img_snapshot_mid_line(uint8 y)
@@ -205,20 +261,20 @@ uint8 use_img_snapshot_mid_line(uint8 y)
     {
         return (uint8)(XM / 2);
     }
-    return snapshot_mid_line[y];
+    return visual_snapshot.mid_line[y];
 }
 
 uint32 use_img_snapshot_l_data_statics(void)
 {
-    return snapshot_l_data_statics;
+    return visual_snapshot.l_data_statics;
 }
 
 uint32 use_img_snapshot_r_data_statics(void)
 {
-    return snapshot_r_data_statics;
+    return visual_snapshot.r_data_statics;
 }
 
 uint8 use_img_snapshot_phase(void)
 {
-    return snapshot_phase;
+    return visual_snapshot.phase;
 }

@@ -3,8 +3,8 @@
 
 #define PROCESS_THRESHOLD_MIN 40
 #define PROCESS_THRESHOLD_MAX 160
-#define PROCESS_CLOSE_OFFSET  5
-#define PROCESS_MID_OFFSET    4
+#define PROCESS_CLOSE_OFFSET  0
+#define PROCESS_MID_OFFSET    0
 #define PROCESS_FAR_OFFSET    0
 #define PROCESS_MM_PER_COUNT  0.003897f
 
@@ -372,16 +372,6 @@ static uint8 draw_control_line(uint8 x1, uint8 y1, uint8 x2, uint8 y2, uint8 col
 void standard(void)
 {
     init_white_width_table();
-    stopline_flag = 0;
-    stop_num = 0;
-    Annulus_flag = 0;
-    Annulus_num = 0;
-    Annulus_Zero = 0.0f;
-    Annulus_Yaw = 0.0f;
-    disappear_flag = 0;
-    disappear_num = 0;
-    disappear_total = 3;
-    elements_index = 0;
 }
 
 static void getGrayscaleHistogram(void)
@@ -1126,10 +1116,16 @@ uint8 search_l_r(uint8 start_l_x, uint8 start_l_y, uint8 start_r_x, uint8 start_
             }
         }
 
-        points_l[l_data_statics][0] = center_point_l[0];
-        points_l[l_data_statics][1] = center_point_l[1];
-        points_r[r_data_statics][0] = center_point_r[0];
-        points_r[r_data_statics][1] = center_point_r[1];
+        if(l_data_statics < USE_num)
+        {
+            points_l[l_data_statics][0] = center_point_l[0];
+            points_l[l_data_statics][1] = center_point_l[1];
+        }
+        if(r_data_statics < USE_num)
+        {
+            points_r[r_data_statics][0] = center_point_r[0];
+            points_r[r_data_statics][1] = center_point_r[1];
+        }
 
         if(r_data_statics >= 2 && l_data_statics >= 3)
         {

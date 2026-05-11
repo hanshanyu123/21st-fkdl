@@ -4,6 +4,7 @@
 #include "imu.h"
 #include "motor.h"
 #include "use_img.h"
+#include "wifi_img.h"
 #include "zf_device_ips200.h"
 
 #define USE_IMU_MODULE 0
@@ -25,6 +26,7 @@ int core0_main(void)
 
     // Core modules
     use_img_init();
+    wifi_img_init();
 #if USE_IMU_MODULE
     imu_init();
 #endif
@@ -40,6 +42,7 @@ int core0_main(void)
 
     while(TRUE)
     {
+        wifi_img_task();
         use_img();
         motor_display_status_task();
     }

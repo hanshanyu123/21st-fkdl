@@ -98,7 +98,7 @@ extern uint16 EXP_TIME;
 extern int UD_OFFSET_DEF;
 
 extern uint8 imgOSTU[YM][XM];
-#define imgGray  mt9v03x_image_1
+#define imgGray  mt9v03x_image_2
 #define imgTran  mt9v03x_image_2
 #define img2wifi imgOSTU
 extern uint8 white_num_row[YM];

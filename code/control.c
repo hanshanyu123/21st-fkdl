@@ -293,7 +293,7 @@ static void update_targets_from_camera(void)
     uint8 corner_active;
 
     offset = vision_track_offset();
-    corner_active = 0;
+    corner_active = (vision_phase_value() == curve);
 
     active_base_speed = base_speed_cmd;
     if(!use_img_is_ready())
@@ -386,55 +386,6 @@ static const char *param_page_name(void)
 
 void Control_DisplayStatusTask(void)
 {
-    static uint32 last_ms = 0;
-    uint32 now_ms = system_getval_ms();
-
-    if((uint32)(now_ms - last_ms) < 100) return;
-    last_ms = now_ms;
-
-    ips200_show_string(0, 122, "                              ");
-    ips200_show_string(0, 140, "                              ");
-    ips200_show_string(0, 158, "                              ");
-    ips200_show_string(0, 176, "                              ");
-    ips200_show_string(0, 194, "                              ");
-
-    ips200_show_string(0, 122, "Pg:");
-    ips200_show_string(24, 122, param_page_name());
-    ips200_show_string(72, 122, "B:");
-    ips200_show_int(90, 122, base_speed_cmd, 4);
-    ips200_show_string(142, 122, "Vp:");
-    ips200_show_int(166, 122, vision_phase_value(), 2);
-    ips200_show_string(178, 122, "O:");
-    ips200_show_int(196, 122, vision_track_offset(), 3);
-
-    ips200_show_string(0, 140, "T:");
-    ips200_show_int(18, 140, target_l, 5);
-    ips200_show_int(72, 140, target_r, 5);
-    ips200_show_string(132, 140, "S:");
-    ips200_show_int(150, 140, Motor_GetSpeedL(), 5);
-    ips200_show_int(198, 140, Motor_GetSpeedR(), 4);
-
-    ips200_show_string(0, 158, "P:");
-    ips200_show_int(18, 158, pwm_l, 5);
-    ips200_show_int(72, 158, pwm_r, 5);
-    ips200_show_string(132, 158, "F:");
-    ips200_show_int(150, 158, fault_stop, 1);
-    ips200_show_string(174, 158, "V:");
-    ips200_show_int(192, 158, vision_state_value(), 2);
-
-    ips200_show_string(0, 176, "KP:");
-    ips200_show_float(26, 176, speed_kp, 2, 1);
-    ips200_show_string(72, 176, "KI:");
-    ips200_show_float(98, 176, speed_ki, 2, 1);
-    ips200_show_string(144, 176, "TK:");
-    ips200_show_float(170, 176, turn_kp, 2, 1);
-
-    ips200_show_string(0, 194, "Th:");
-    ips200_show_int(26, 194, nowThreshold, 3);
-    ips200_show_string(72, 194, "Cp:");
-    ips200_show_int(98, 194, 0, 3);
-    ips200_show_string(144, 194, "Q:");
-    ips200_show_int(170, 194, vision_confidence_value(), 3);
 }
 
 int16 Control_GetBaseSpeedCommand(void) { return base_speed_cmd; }
