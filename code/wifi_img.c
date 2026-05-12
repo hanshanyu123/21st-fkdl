@@ -1,5 +1,7 @@
 #include "wifi_img.h"
 
+#if WIFI_IMG_ENABLE
+
 #include "process_img.h"
 #include "seekfree_assistant.h"
 #include "seekfree_assistant_interface.h"
@@ -108,3 +110,19 @@ void wifi_img_send(void)
 
     seekfree_assistant_camera_send();
 }
+
+#else
+
+void wifi_img_init(void)
+{
+}
+
+void wifi_img_task(void)
+{
+}
+
+void wifi_img_send(void)
+{
+}
+
+#endif
